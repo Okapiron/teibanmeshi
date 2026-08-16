@@ -52,6 +52,9 @@ tmp/
 temp/
 *.tmp
 
+# Retired App Store review artifacts
+docs/iap-review-screenshot*
+
 # Environment
 .env
 .env.*
