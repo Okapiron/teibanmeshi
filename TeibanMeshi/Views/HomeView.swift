@@ -2,20 +2,29 @@ import SwiftData
 import SwiftUI
 
 struct MainTabView: View {
+    @State private var selectedTab: MainTab = .home
+
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             HomeView()
                 .tabItem {
                     Label("ホーム", systemImage: "house.fill")
                 }
+                .tag(MainTab.home)
 
             ShopListView()
                 .tabItem {
                     Label("一覧", systemImage: "list.bullet")
                 }
+                .tag(MainTab.shops)
         }
         .tint(AppTheme.accent)
     }
+}
+
+private enum MainTab: Hashable {
+    case home
+    case shops
 }
 
 struct HomeView: View {
@@ -26,6 +35,7 @@ struct HomeView: View {
     @State private var searchText = ""
     @State private var isShowingNewOrder = false
     @State private var navigationPath: [String] = []
+    @State private var persistenceErrorMessage: String?
 
     private var trimmedSearchText: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -39,20 +49,26 @@ struct HomeView: View {
             .map { $0 }
     }
 
+    private var pinnedShops: [Shop] {
+        shops
+            .filter { $0.pinnedAt != nil }
+            .sorted { ($0.pinnedAt ?? .distantPast) < ($1.pinnedAt ?? .distantPast) }
+    }
+
     private var searchResults: [(shop: Shop, orders: [OrderSet])] {
         guard !trimmedSearchText.isEmpty else { return [] }
-        let keyword = trimmedSearchText.localizedLowercase
-
         return shops
             .sorted { $0.updatedAt > $1.updatedAt }
             .compactMap { shop in
-                let shopMatches = shop.name.localizedLowercase.contains(keyword)
+                let shopMatches = SearchMatcher.matches(query: trimmedSearchText, values: [shop.name])
                 let matchingOrders = orderSets
                     .filter { $0.shopId == shop.id }
                     .filter { order in
                         shopMatches
-                            || order.items.joined(separator: " ").localizedLowercase.contains(keyword)
-                            || (order.memo ?? "").localizedLowercase.contains(keyword)
+                            || SearchMatcher.matches(
+                                query: trimmedSearchText,
+                                values: order.items + [order.memo ?? ""]
+                            )
                     }
                     .sorted { $0.updatedAt > $1.updatedAt }
 
@@ -66,30 +82,32 @@ struct HomeView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             List {
-                Section {
-                    HStack(spacing: 12) {
-                        Image(systemName: "list.clipboard.fill")
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 44, height: 44)
-                            .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 10))
-                            .shadow(color: AppTheme.accent.opacity(0.18), radius: 8, y: 4)
+                if trimmedSearchText.isEmpty {
+                    Section {
+                        HStack(spacing: 12) {
+                            Image(systemName: "list.clipboard.fill")
+                                .font(.title2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                                .background(AppTheme.accent, in: RoundedRectangle(cornerRadius: 8))
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("定番メシ")
-                                .font(.largeTitle.weight(.bold))
-                                .foregroundStyle(AppTheme.text)
-                            Text("いつもの注文メモ")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("定番メシ")
+                                    .font(.largeTitle.weight(.bold))
+                                    .foregroundStyle(AppTheme.text)
+                                Text("いつもの注文メモ")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
+                        .padding(.vertical, 6)
                     }
-                    .padding(.vertical, 6)
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
                 }
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
 
                 if trimmedSearchText.isEmpty {
+                    pinnedSection
                     recentSection
                     newOrderSection
                     if shops.isEmpty {
@@ -121,6 +139,33 @@ struct HomeView: View {
                 OrderFormView(mode: .create(prefilledShopName: trimmedSearchText.isEmpty ? nil : trimmedSearchText)) { shopId in
                     navigationPath.append(shopId)
                 }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if pinnedShops.count > 1 {
+                        EditButton()
+                    }
+                }
+            }
+            .persistenceErrorAlert(message: $persistenceErrorMessage)
+        }
+    }
+
+    @ViewBuilder
+    private var pinnedSection: some View {
+        if !pinnedShops.isEmpty {
+            Section("ピン留め") {
+                ForEach(pinnedShops) { shop in
+                    Button {
+                        navigationPath.append(shop.id)
+                    } label: {
+                        PinnedShopRow(shop: shop, primaryOrder: primaryOrder(for: shop))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(AppTheme.surface)
+                }
+                .onMove(perform: movePinnedShops)
             }
         }
     }
@@ -182,10 +227,10 @@ struct HomeView: View {
                 }
             } else {
                 ForEach(searchResults, id: \.shop.id) { result in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Button {
-                            navigationPath.append(result.shop.id)
-                        } label: {
+                    Button {
+                        navigationPath.append(result.shop.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(result.shop.name)
                                     .font(.headline)
@@ -195,31 +240,53 @@ struct HomeView: View {
                                     .font(.caption)
                                     .foregroundStyle(.tertiary)
                             }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
 
-                        if result.orders.isEmpty {
-                            Text("この店の注文メモはまだありません")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(result.orders) { order in
-                                Button {
-                                    navigationPath.append(result.shop.id)
-                                } label: {
+                            if result.orders.isEmpty {
+                                Text("この店の注文メモはまだありません")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(result.orders) { order in
                                     OrderRow(order: order)
-                                        .contentShape(Rectangle())
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 4)
+                    .buttonStyle(.plain)
                     .listRowBackground(AppTheme.surface)
                 }
             }
+        }
+    }
+
+    private func primaryOrder(for shop: Shop) -> OrderSet? {
+        let orders = orderSets.filter { $0.shopId == shop.id }
+        if let primaryOrderId = shop.primaryOrderId,
+           let primary = orders.first(where: { $0.id == primaryOrderId }) {
+            return primary
+        }
+        return orders
+            .filter { $0.status == .favorite }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .first
+    }
+
+    private func movePinnedShops(from source: IndexSet, to destination: Int) {
+        var reordered = pinnedShops
+        reordered.move(fromOffsets: source, toOffset: destination)
+        let baseDate = Date()
+        for (index, shop) in reordered.enumerated() {
+            shop.pinnedAt = baseDate.addingTimeInterval(Double(index))
+        }
+
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            persistenceErrorMessage = "ピン留めの順番を保存できませんでした。もう一度お試しください。"
         }
     }
 }
@@ -249,6 +316,7 @@ struct ShopListView: View {
     @State private var navigationPath: [String] = []
     @State private var shopPendingDeletion: Shop?
     @State private var isShowingDeleteShopConfirmation = false
+    @State private var persistenceErrorMessage: String?
 
     private var sortedShops: [Shop] {
         switch sort {
@@ -292,6 +360,14 @@ struct ShopListView: View {
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button {
+                                    togglePin(shop)
+                                } label: {
+                                    Label(shop.pinnedAt == nil ? "ピン留め" : "解除", systemImage: shop.pinnedAt == nil ? "pin.fill" : "pin.slash")
+                                }
+                                .tint(AppTheme.amber)
+                            }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) {
                                     shopPendingDeletion = shop
@@ -332,6 +408,7 @@ struct ShopListView: View {
                     Text("この操作は取り消せません。")
                 }
             }
+            .persistenceErrorAlert(message: $persistenceErrorMessage)
         }
     }
 
@@ -342,13 +419,40 @@ struct ShopListView: View {
     private func deletePendingShop() {
         guard let shop = shopPendingDeletion else { return }
 
-        orderSets
-            .filter { $0.shopId == shop.id }
-            .forEach { modelContext.delete($0) }
+        let ordersToDelete = orderSets.filter { $0.shopId == shop.id }
+        let imageUris = [shop.imageUri] + ordersToDelete.map(\.imageUri)
+
+        ordersToDelete.forEach { modelContext.delete($0) }
 
         modelContext.delete(shop)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+            imageUris.forEach(LocalImageStore.delete)
+        } catch {
+            modelContext.rollback()
+            persistenceErrorMessage = "店と注文メモを削除できませんでした。もう一度お試しください。"
+        }
         shopPendingDeletion = nil
+    }
+
+    private func togglePin(_ shop: Shop) {
+        if shop.pinnedAt != nil {
+            setPinned(false, for: shop)
+            return
+        }
+
+        setPinned(true, for: shop)
+    }
+
+    private func setPinned(_ isPinned: Bool, for shop: Shop) {
+        shop.pinnedAt = isPinned ? Date() : nil
+        shop.updatedAt = Date()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            persistenceErrorMessage = "ピン留めを変更できませんでした。もう一度お試しください。"
+        }
     }
 }
 
@@ -358,11 +462,7 @@ private struct ShopListRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "fork.knife")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(AppTheme.accent)
-                .frame(width: 28, height: 28)
-                .background(AppTheme.accentSoft.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
+            ShopThumbnail(shop: shop)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(shop.name)
@@ -377,11 +477,60 @@ private struct ShopListRow: View {
 
             Spacer()
 
+            if shop.pinnedAt != nil {
+                Image(systemName: "pin.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.amber)
+                    .accessibilityLabel("ピン留め済み")
+            }
+
             Image(systemName: "chevron.right")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 3)
+    }
+}
+
+private struct PinnedShopRow: View {
+    let shop: Shop
+    let primaryOrder: OrderSet?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            LocalPhotoView(
+                uri: primaryOrder?.imageUri ?? shop.imageUri,
+                placeholderSystemImage: "fork.knife"
+            )
+            .frame(width: 52, height: 52)
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(shop.name)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(AppTheme.text)
+                    .lineLimit(1)
+
+                if let primaryOrder {
+                    Text(primaryOrder.items.joined(separator: " / "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else {
+                    Text("定番を登録するとここに表示されます")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 6)
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
     }
 }

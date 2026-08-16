@@ -18,11 +18,16 @@ struct OrderFormView: View {
     @State private var itemDrafts: [String]
     @State private var selectedStatus: OrderStatus
     @State private var memo: String
+    @State private var imageUri: String?
     @State private var selectedSuggestionShopId: String?
     @State private var allowsNewShopDespiteSuggestions = false
     @State private var showingDeleteConfirmation = false
     @State private var validationMessage: String?
+    @State private var persistenceErrorMessage: String?
+    @State private var didCommit = false
     @FocusState private var focusedItemIndex: Int?
+
+    private let originalImageUri: String?
 
     init(mode: OrderFormMode, onSave: ((String) -> Void)? = nil) {
         self.mode = mode
@@ -30,15 +35,19 @@ struct OrderFormView: View {
 
         switch mode {
         case .create(let prefilledShopName, _):
+            originalImageUri = nil
             _shopName = State(initialValue: prefilledShopName ?? "")
             _itemDrafts = State(initialValue: [""])
             _selectedStatus = State(initialValue: .tried)
             _memo = State(initialValue: "")
+            _imageUri = State(initialValue: nil)
         case .edit(let order):
+            originalImageUri = order.imageUri
             _shopName = State(initialValue: "")
             _itemDrafts = State(initialValue: order.items + [""])
             _selectedStatus = State(initialValue: order.status)
             _memo = State(initialValue: order.memo ?? "")
+            _imageUri = State(initialValue: order.imageUri)
         }
     }
 
@@ -59,7 +68,7 @@ struct OrderFormView: View {
     }
 
     private var trimmedShopName: String {
-        shopName.trimmingCharacters(in: .whitespacesAndNewlines)
+        ShopNameMatcher.trimmed(shopName)
     }
 
     private var selectedSuggestionShop: Shop? {
@@ -184,6 +193,16 @@ struct OrderFormView: View {
                     }
                 }
 
+                Section("注文写真") {
+                    PhotoEditor(
+                        title: "注文を見分ける写真",
+                        helper: "料理やメニューの写真を1枚登録できます。",
+                        placeholderSystemImage: "fork.knife",
+                        originalImageUri: originalImageUri,
+                        imageUri: $imageUri
+                    )
+                }
+
                 Section("状態") {
                     Picker("状態", selection: $selectedStatus) {
                         ForEach(OrderStatus.allCases) { status in
@@ -234,7 +253,7 @@ struct OrderFormView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("キャンセル") {
-                        dismiss()
+                        cancel()
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -247,6 +266,7 @@ struct OrderFormView: View {
                 hydrateShopNameIfNeeded()
                 normalizeDraftRows()
             }
+            .onDisappear(perform: discardUncommittedPhoto)
             .confirmationDialog("この記録を削除しますか？", isPresented: $showingDeleteConfirmation, titleVisibility: .visible) {
                 Button("削除", role: .destructive) {
                     deleteOrder()
@@ -255,6 +275,7 @@ struct OrderFormView: View {
             } message: {
                 Text("この操作は取り消せません。")
             }
+            .persistenceErrorAlert(message: $persistenceErrorMessage)
         }
     }
 
@@ -299,7 +320,7 @@ struct OrderFormView: View {
         guard isShopNameEditable,
               selectedSuggestionShopId == nil,
               !suggestedShops.isEmpty,
-              shops.first(where: { comparableShopName($0.name) == comparableShopName(trimmedShopName) }) == nil else {
+              shops.first(where: { ShopNameMatcher.isExactMatch($0.name, trimmedShopName) }) == nil else {
             return false
         }
         return true
@@ -342,20 +363,39 @@ struct OrderFormView: View {
                 status: selectedStatus,
                 items: items,
                 memo: normalizedMemo.isEmpty ? nil : normalizedMemo,
+                imageUri: imageUri,
                 createdAt: now,
                 updatedAt: now
             )
             modelContext.insert(order)
+            if selectedStatus == .favorite, shop.primaryOrderId == nil {
+                shop.primaryOrderId = order.id
+            }
         case .edit(let order):
-            order.shopId = shop.id
             order.status = selectedStatus
             order.items = items
             order.memo = normalizedMemo.isEmpty ? nil : normalizedMemo
+            order.imageUri = imageUri
             order.updatedAt = now
+            if selectedStatus == .favorite, shop.primaryOrderId == nil {
+                shop.primaryOrderId = order.id
+            } else if selectedStatus != .favorite, shop.primaryOrderId == order.id {
+                shop.primaryOrderId = nil
+            }
         }
 
         shop.updatedAt = now
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            persistenceErrorMessage = "記録を保存できませんでした。入力内容は画面に残っています。もう一度お試しください。"
+            return
+        }
+        if originalImageUri != imageUri {
+            LocalImageStore.delete(originalImageUri)
+        }
+        didCommit = true
         onSave?(shop.id)
         dismiss()
     }
@@ -371,7 +411,7 @@ struct OrderFormView: View {
             return selectedShop
         }
 
-        if let existingShop = shops.first(where: { comparableShopName($0.name) == comparableShopName(name) }) {
+        if let existingShop = shops.first(where: { ShopNameMatcher.isExactMatch($0.name, name) }) {
             return existingShop
         }
 
@@ -384,7 +424,7 @@ struct OrderFormView: View {
         isShopNameEditable
             && selectedSuggestionShopId == nil
             && !allowsNewShopDespiteSuggestions
-            && shops.first(where: { comparableShopName($0.name) == comparableShopName(trimmedShopName) }) == nil
+            && shops.first(where: { ShopNameMatcher.isExactMatch($0.name, trimmedShopName) }) == nil
             && !suggestedShops.isEmpty
     }
 
@@ -396,12 +436,12 @@ struct OrderFormView: View {
     }
 
     private func matchingShops(for input: String) -> [Shop] {
-        let normalizedInput = comparableShopName(input)
+        let normalizedInput = ShopNameMatcher.similarityKey(input)
         guard isShopNameEditable, !normalizedInput.isEmpty else { return [] }
 
         return shops
             .compactMap { shop -> (shop: Shop, score: Int)? in
-                let score = suggestionScore(input: normalizedInput, shopName: comparableShopName(shop.name))
+                let score = suggestionScore(input: normalizedInput, shopName: ShopNameMatcher.similarityKey(shop.name))
                 guard score > 0 else { return nil }
                 return (shop, score)
             }
@@ -429,18 +469,36 @@ struct OrderFormView: View {
         return 0
     }
 
-    private func comparableShopName(_ value: String) -> String {
-        value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .localizedLowercase
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "　", with: "")
-    }
-
     private func deleteOrder() {
         guard case .edit(let order) = mode else { return }
+        let persistedImageUri = order.imageUri
+        if let shop = shops.first(where: { $0.id == order.shopId }),
+           shop.primaryOrderId == order.id {
+            shop.primaryOrderId = nil
+            shop.updatedAt = Date()
+        }
         modelContext.delete(order)
-        try? modelContext.save()
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            persistenceErrorMessage = "記録を削除できませんでした。もう一度お試しください。"
+            return
+        }
+        LocalImageStore.delete(persistedImageUri)
+        if imageUri != persistedImageUri {
+            LocalImageStore.delete(imageUri)
+        }
+        didCommit = true
         dismiss()
+    }
+
+    private func cancel() {
+        dismiss()
+    }
+
+    private func discardUncommittedPhoto() {
+        guard !didCommit, imageUri != originalImageUri else { return }
+        LocalImageStore.delete(imageUri)
     }
 }

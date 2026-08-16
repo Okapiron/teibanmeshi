@@ -8,8 +8,8 @@
 - SKU: `TEIBANMESHI-IOS`
 - Support URL: `https://okapiron.github.io/teibanmeshi/support/`
 - Privacy Policy URL: `https://okapiron.github.io/teibanmeshi/privacy/`
-- Version: `1.0`
-- Build: `8`
+- Version: `1.1`
+- Build: `11`（App Store Connectへアップロード・選択済み）
 - 対象OS: iOS 17以降
 - 配信形式: iPhoneアプリ
 - ログイン: なし
@@ -102,8 +102,8 @@ App Store ConnectのApp Privacyでは以下の方針。
 - 開発者が収集するデータ: なし
 - 位置情報: 使わない
 - 連絡先: 使わない
-- 写真: MVPでは使わない
-- カメラ: 使わない
+- 写真: ユーザーが任意で選択または撮影し、端末内にのみ保存する
+- カメラ: ユーザーが写真撮影を選んだ場合にのみ使用する
 - アカウント作成: なし
 - ログイン: なし
 
@@ -113,7 +113,7 @@ App Store ConnectのApp Privacyでは以下の方針。
 Data Not Collected
 ```
 
-ユーザーが入力する店名、注文内容、メモは端末内ローカル保存のみで、開発者や第三者へ送信しない。
+ユーザーが入力する店名、注文内容、メモ、写真は端末内ローカル保存のみで、開発者や第三者へ送信しない。
 
 ## 輸出コンプライアンス
 
@@ -144,7 +144,8 @@ Data Not Collected
 
 ## 提出前チェック
 
-- App Store ConnectでBuild `1.0 (8)` の処理完了を待つ
+- App Store ConnectでBuild `1.1 (11)` の処理完了を確認済み
+- バージョン1.1にBuild `11`を選択済み。Build `10`は提出しない
 - 6.9インチのスクリーンショット3枚を登録する
 - App Privacyを「データ収集なし」の方針で入力する
 - 輸出コンプライアンスで暗号化利用なしの状態になっていることを確認する
@@ -154,6 +155,24 @@ Data Not Collected
 
 ## 未確定
 
-- 配信国、価格、カテゴリの最終判断
-- 3枚目スクリーンショットをBuild `1.0 (8)` の画面で撮り直すか
-- GitHub Pagesを `main` ブランチの `/docs` から公開設定する
+- Build `11`で写真、新規登録、検索、ピン留め、並び替え、編集、削除を実機確認する
+- App Reviewへの提出タイミング（現在はBuild `11`で下書き作成済み、未提出）
+
+## バージョン1.1の方針
+
+バージョン1.1は無料、広告なし、アプリ内課金なしで公開する。
+
+- App Storeバージョン: `1.1`
+- 提出対象ビルド: `11`
+- Build `10`は広告とアプリ内課金を含むため提出しない
+- App Review下書きからApp内課金 `com.okapiron.TeibanMeshi.pro` を削除済み
+- App Privacyを`Data Not Collected`へ更新済み
+- 年齢制限の広告質問を「いいえ」へ更新済み
+- 店、注文、写真、ピン留め、手動並び替えをすべて無料で提供する
+
+提出前に追加確認すること:
+
+- マーケティングURL `https://okapiron.github.io/` を維持する
+- プライバシーポリシーが広告なし、トラッキングなしの実装と一致していることを確認する
+- 実機で写真、新規登録、検索、ピン留め、並び替え、編集、削除を確認する
+- App Storeのプロモーション文、説明、更新内容にProや広告の文言が残っていないことを確認する
